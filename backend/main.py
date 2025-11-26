@@ -19,3 +19,5 @@ evo2_image = (
     .run_commands("pip install 'transformer_engine[pytorch]==1.13' --no-build-isolation")
     .pip_install_from_requirements("requirements.txt")
 )
+
+app = modal.App("GenoSynth-backend", image=evo2_image)
