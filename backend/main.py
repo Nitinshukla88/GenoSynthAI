@@ -50,3 +50,12 @@ app = modal.App("GenoSynthAI-Backend", image=evo2_image)
 # Volume to cache downloaded models (saves time on subsequent runs)
 volume = modal.Volume.from_name("hf_cache", create_if_missing=True)
 mount_path = "/root/.cache/huggingface"
+
+# ------------------------------------------------------------------
+# 2. DATA MODELS
+# ------------------------------------------------------------------
+class VariantRequest(BaseModel):
+    variant_position: int
+    alternative: str
+    genome: str
+    chromosome: str
