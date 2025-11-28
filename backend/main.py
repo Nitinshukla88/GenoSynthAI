@@ -59,3 +59,29 @@ class VariantRequest(BaseModel):
     alternative: str
     genome: str
     chromosome: str
+
+# ------------------------------------------------------------------
+# 3. HELPER FUNCTIONS (Business Logic)
+# ------------------------------------------------------------------
+def get_genome_sequence(position, genome: str, chromosome: str, window_size=8192):
+    import requests
+
+    half_window = window_size // 2
+    # Convert to 0-based start, 1-based end (UCSC API style)
+    start = max(0, position - 1 - half_window)
+    end = position - 1 + half_window + 1
+
+    print(f"Fetching genome window: {chromosome}:{start}-{end} ({genome})...")
+
+    api_url = f"https://api.genome.ucsc.edu/getData/sequence?genome={genome};chrom={chromosome};start={start};end={end}"
+    response = requests.get(api_url)
+
+    if response.status_code != 200:
+        raise Exception(f"Failed to fetch genome sequence: {response.status_code}")
+
+    data = response.json()
+    if "dna" not in data:
+        raise Exception(f"UCSC API Error: {data.get('error')}")
+
+    # Return the sequence (uppercase) and the start position for alignment
+    return data["dna"].upper(), start
