@@ -85,3 +85,34 @@ def get_genome_sequence(position, genome: str, chromosome: str, window_size=8192
 
     # Return the sequence (uppercase) and the start position for alignment
     return data["dna"].upper(), start
+
+def analyze_variant(relative_pos, reference, alternative, window_seq, model):
+    # Construct the variant sequence by splicing the string
+    var_seq = window_seq[:relative_pos] + alternative + window_seq[relative_pos+1:]
+
+    # Score both sequences (Model Forward Pass)
+    # We use list inputs ([seq]) as per standard Evo2 usage
+    ref_score = model.score_sequences([window_seq])[0]
+    var_score = model.score_sequences([var_seq])[0]
+
+    delta_score = var_score - ref_score
+
+    # Hardcoded thresholds from the Evo2 BRCA1 Notebook/Paper
+    threshold = -0.0009178519
+    lof_std = 0.0015140239
+    func_std = 0.0009016589
+
+    if delta_score < threshold:
+        prediction = "Likely pathogenic"
+        confidence = min(1.0, abs(delta_score - threshold) / lof_std)
+    else:
+        prediction = "Likely benign"
+        confidence = min(1.0, abs(delta_score - threshold) / func_std)
+
+    return {
+        "reference": reference,
+        "alternative": alternative,
+        "delta_score": float(delta_score),
+        "prediction": prediction,
+        "classification_confidence": float(confidence)
+    }
