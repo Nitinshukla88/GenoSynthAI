@@ -116,3 +116,55 @@ def analyze_variant(relative_pos, reference, alternative, window_seq, model):
         "prediction": prediction,
         "classification_confidence": float(confidence)
     }
+
+
+# ------------------------------------------------------------------
+# 4. API ENDPOINT CLASS (Modal Service)
+# ------------------------------------------------------------------
+@app.cls(
+    gpu="H100",  # H100 required for FP8 support (Evo2 requirement)
+    volumes={mount_path: volume},
+    timeout=600,
+    max_containers=3,
+    retries=2,
+    scaledown_window=120
+)
+class Evo2Model:
+    @modal.enter()
+    def setup(self):
+        from evo2 import Evo2
+        import os
+        
+        # Move to repo dir to ensure relative paths (like notebooks) work if needed
+        os.chdir("/root/evo2")
+        
+        print("Loading Evo2 model (7B)...")
+        self.model = Evo2("evo2_7b")
+        print("Model loaded successfully.")
+
+    @modal.fastapi_endpoint(method="POST")
+    def analyze_single_variant(self, request: VariantRequest):
+        print(f"Received Request: {request}")
+
+        # 1. Fetch Sequence from UCSC
+        window_seq, seq_start = get_genome_sequence(
+            request.variant_position, request.genome, request.chromosome
+        )
+
+        # 2. Align Variant Position
+        rel_pos = request.variant_position - 1 - seq_start
+
+        # Validation
+        if rel_pos < 0 or rel_pos >= len(window_seq):
+             raise ValueError(f"Position {request.variant_position} is outside the fetched window.")
+        
+        reference = window_seq[rel_pos]
+        print(f"Reference at pos {request.variant_position} is '{reference}'")
+
+        # 3. Run Analysis
+        result = analyze_variant(
+            rel_pos, reference, request.alternative, window_seq, self.model
+        )
+
+        result["position"] = request.variant_position
+        return result
