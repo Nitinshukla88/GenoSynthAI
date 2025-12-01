@@ -168,3 +168,138 @@ class Evo2Model:
 
         result["position"] = request.variant_position
         return result
+    
+
+# ------------------------------------------------------------------
+# 5. BATCH ANALYSIS FUNCTION (Notebook Replica)
+# ------------------------------------------------------------------
+@app.function(gpu="H100", volumes={mount_path: volume}, timeout=1200)
+def run_brca1_analysis():
+    # Imports must be inside the function for Modal execution
+    import base64
+    from io import BytesIO
+    from Bio import SeqIO
+    import gzip
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import pandas as pd
+    import seaborn as sns
+    from sklearn.metrics import roc_auc_score, roc_curve
+    from evo2 import Evo2
+
+    WINDOW_SIZE = 8192
+    print("Loading Evo2 model for batch analysis...")
+    model = Evo2('evo2_7b')
+    
+    # Path to the notebooks data inside the cloned repo
+    base_path = "/root/evo2/notebooks/brca1"
+    
+    print("Reading BRCA1 Dataset...")
+    brca1_df = pd.read_excel(f'{base_path}/41586_2018_461_MOESM3_ESM.xlsx', header=2)
+    
+    # Cleaning Data
+    brca1_df = brca1_df[['chromosome', 'position (hg19)', 'reference', 'alt', 'function.score.mean', 'func.class']]
+    brca1_df.rename(columns={'chromosome': 'chrom', 'position (hg19)': 'pos', 'reference': 'ref', 'alt': 'alt', 'function.score.mean': 'score', 'func.class': 'class'}, inplace=True)
+    brca1_df['class'] = brca1_df['class'].replace(['FUNC', 'INT'], 'FUNC/INT')
+
+    # Reading Reference Genome (Chromosome 17)
+    with gzip.open(f'{base_path}/GRCh37.p13_chr17.fna.gz', "rt") as handle:
+        for record in SeqIO.parse(handle, "fasta"):
+            seq_chr17 = str(record.seq)
+            break
+
+    # Analysis Loop
+    ref_seqs = []
+    ref_seq_to_index = {}
+    ref_seq_indexes = []
+    var_seqs = []
+    
+    # Running on first 500 rows (same as your old code)
+    brca1_subset = brca1_df.iloc[:500].copy()
+
+    for _, row in brca1_subset.iterrows():
+        p = row["pos"] - 1 
+        full_seq = seq_chr17
+        ref_seq_start = max(0, p - WINDOW_SIZE//2)
+        ref_seq_end = min(len(full_seq), p + WINDOW_SIZE//2)
+        ref_seq = seq_chr17[ref_seq_start:ref_seq_end]
+        snv_pos_in_ref = min(WINDOW_SIZE//2, p)
+        var_seq = ref_seq[:snv_pos_in_ref] + row["alt"] + ref_seq[snv_pos_in_ref+1:]
+
+        if ref_seq not in ref_seq_to_index:
+            ref_seq_to_index[ref_seq] = len(ref_seqs)
+            ref_seqs.append(ref_seq)
+        ref_seq_indexes.append(ref_seq_to_index[ref_seq])
+        var_seqs.append(var_seq)
+
+    ref_seq_indexes = np.array(ref_seq_indexes)
+    
+    print(f'Scoring {len(ref_seqs)} reference sequences...')
+    ref_scores = model.score_sequences(ref_seqs)
+    
+    print(f'Scoring {len(var_seqs)} variant sequences...')
+    var_scores = model.score_sequences(var_seqs)
+
+    delta_scores = np.array(var_scores) - np.array(ref_scores)[ref_seq_indexes]
+    brca1_subset[f'evo2_delta_score'] = delta_scores
+
+    # Calculate AUROC
+    y_true = (brca1_subset['class'] == 'LOF')
+    if len(y_true.unique()) > 1:
+        auroc = roc_auc_score(y_true, -brca1_subset['evo2_delta_score'])
+    else:
+        auroc = 0.0
+    
+    # Calculate Confidence Params (Thresholds)
+    y_true = (brca1_subset["class"] == "LOF")
+    fpr, tpr, thresholds = roc_curve(y_true, -brca1_subset["evo2_delta_score"])
+    optimal_idx = (tpr - fpr).argmax()
+    optimal_threshold = -thresholds[optimal_idx]
+
+    lof_scores = brca1_subset.loc[brca1_subset["class"] == "LOF", "evo2_delta_score"]
+    func_scores = brca1_subset.loc[brca1_subset["class"] == "FUNC/INT", "evo2_delta_score"]
+    
+    confidence_params = {
+        "threshold": optimal_threshold,
+        "lof_std": lof_scores.std(),
+        "func_std": func_scores.std()
+    }
+    print("Confidence params:", confidence_params)
+
+    # Generate Plot
+    plt.figure(figsize=(4, 2))
+    p = sns.stripplot(data=brca1_subset, x='evo2_delta_score', y='class', hue='class', order=['FUNC/INT', 'LOF'], palette=['#777777', 'C3'], size=2, jitter=0.3)
+    sns.boxplot(showmeans=True, meanline=True, meanprops={'visible': False}, medianprops={'color': 'k', 'ls': '-', 'lw': 2}, whiskerprops={'visible': False}, zorder=10, x="evo2_delta_score", y="class", data=brca1_subset, showfliers=False, showbox=False, showcaps=False, ax=p)
+    plt.xlabel('Delta likelihood score, Evo 2')
+    plt.ylabel('BRCA1 SNV class')
+    plt.tight_layout()
+
+    buffer = BytesIO()
+    plt.savefig(buffer, format="png")
+    plot_data = base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+    return {'variants': brca1_subset.to_dict(orient="records"), "plot": plot_data, "auroc": auroc}
+
+
+@app.function()
+def brca1_example():
+    import base64
+    from io import BytesIO
+    import matplotlib.pyplot as plt
+    import matplotlib.image as mpimg
+
+    print("Running BRCA1 variant analysis with Evo2...")
+
+    # Run inference
+    result = run_brca1_analysis.remote()
+
+    if "plot" in result:
+        plot_data = base64.b64decode(result["plot"])
+        with open("brca1_analysis_plot.png", "wb") as f:
+            f.write(plot_data)
+
+        img = mpimg.imread(BytesIO(plot_data))
+        plt.figure(figsize=(10, 5))
+        plt.imshow(img)
+        plt.axis("off")
+        plt.show()
