@@ -1,5 +1,7 @@
+fastapi[standard]
+modal
 matplotlib
-pandas 
-seaborn 
-scikit-learn 
+pandas
+seaborn
+scikit-learn
 openpyxl
