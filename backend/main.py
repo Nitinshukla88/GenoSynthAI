@@ -303,3 +303,53 @@ def brca1_example():
         plt.imshow(img)
         plt.axis("off")
         plt.show()
+
+
+# ------------------------------------------------------------------
+# 6. LOCAL ENTRYPOINT (The Client Test)
+# ------------------------------------------------------------------
+@app.local_entrypoint()
+def main():
+    # This imports match Andreas's logic for testing the API
+    import requests
+    import json
+    
+    print("🚀 App initialized. Testing API Endpoint...")
+    
+    # 1. Instantiate the model class locally to get the URL
+    # NOTE: This only works if you have already deployed the app or are serving it!
+    evo2_model = Evo2Model()
+    
+    try:
+        url = evo2_model.analyze_single_variant.web_url
+        print(f"Target URL: {url}")
+        
+        if not url:
+            print("⚠️ URL is empty. Make sure you run 'modal serve' or 'modal deploy'.")
+            return
+
+        # 2. Define the Test Payload (Same as Andreas's tutorial)
+        payload = {
+            "variant_position": 43119628,
+            "alternative": "G",
+            "genome": "hg38",
+            "chromosome": "chr17"
+        }
+
+        headers = {
+            "Content-Type": "application/json"
+        }
+
+        # 3. Send the Test Request
+        print("Sending request...")
+        response = requests.post(url, json=payload, headers=headers)
+        response.raise_for_status()
+        
+        result = response.json()
+        print("✅ Success! Result received:")
+        print(result)
+
+    except Exception as e:
+        print(f"❌ Error during test: {e}")
+        print("Tip: If you are running 'modal run', the web endpoint might not be active yet.")
+        print("Try running: 'modal serve main.py' in a separate terminal first.")
